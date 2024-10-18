@@ -1,0 +1,70 @@
+image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:latest
+
+stages:
+  - test
+  - sonarqube
+  - build
+  - build-image
+  - deploy
+  - after-deploy
+  - cleanup
+
+variables:
+  APP_PORT: "46001"
+  TARGET_PORT: "5111"
+  REPLICAS: "1"
+  SERVICE_NAME: "synapse-chatbots-aiwiki"
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
+  SWARM_RUN_CMD: '"if docker service inspect $SERVICE_NAME; then docker service update --image $IMAGE_NAME --with-registry-auth --replicas $REPLICAS --update-delay 10s $SERVICE_NAME; else docker service create --with-registry-auth --name $SERVICE_NAME --replicas $REPLICAS --update-delay 10s -p $APP_PORT:$TARGET_PORT $IMAGE_NAME; fi"'
+
+Build Image:
+  stage: build-image
+  variables:
+    image: $IMAGE_NAME
+  before_script:
+    - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - DOCKER_BUILDKIT=1 docker build --pull -t ${image} .
+    - docker push ${image}
+
+Deploy Stage:
+  stage: deploy
+  variables:
+    host: $STAGE_DOCKER_SWARM_L
+    ssh_khown_host_key: $SSH_SERVER_HOSTKEYS_STAGE_DOCKER_SWARM_L
+  before_script:
+    - which ssh-agent || ( apt-get update -y && apt-get install openssh-client gnupg2 pass -y )
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SSH_PRIVATE_KEY_TEST")
+    - echo "$SSH_PRIVATE_KEY_TEST" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - '[[ -f /.dockerenv ]] && echo "${ssh_khown_host_key}" > ~/.ssh/known_hosts'
+    - chmod 644 ~/.ssh/known_hosts
+    - ssh $SSH_USER@${host} docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $CI_REGISTRY
+    - 'eval "SWARM_RUN_CMD=$SWARM_RUN_CMD"'
+    - 'if [ "$VERBOSE" == "true" ]; then echo "SWARM_RUN_CMD: $SWARM_RUN_CMD"; fi'
+  script:
+    - ssh $SSH_USER@${host} $SWARM_RUN_CMD
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/buildpack-deps:bionic
+
+Deploy Prod:
+  stage: deploy
+  only:
+    - tags
+  variables:
+    host: $PROD_DOCKER_SWARM_L
+    ssh_khown_host_key: $SSH_SERVER_HOSTKEYS_PROD_DOCKER_SWARM_L
+  before_script:
+    - which ssh-agent || ( apt-get update -y && apt-get install openssh-client gnupg2 pass -y )
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SSH_PRIVATE_KEY_TEST")
+    - echo "$SSH_PRIVATE_KEY_TEST" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - '[[ -f /.dockerenv ]] && echo "${ssh_khown_host_key}" > ~/.ssh/known_hosts'
+    - chmod 644 ~/.ssh/known_hosts
+    - ssh $SSH_USER@${host} docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $CI_REGISTRY
+    - 'eval "SWARM_RUN_CMD=$SWARM_RUN_CMD"'
+    - 'if [ "$VERBOSE" == "true" ]; then echo "SWARM_RUN_CMD: $SWARM_RUN_CMD"; fi'
+  script:
+    - ssh $SSH_USER@${host} $SWARM_RUN_CMD
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/buildpack-deps:bionic
